@@ -4,15 +4,17 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+async-compat = "0.2.5"
 color-eyre = "0.6.4"
 hickory-resolver = "0.25.2"
 libsql = "0.9.6"
 maud = { version = "0.27.0", features = ["poem"] }
 oauth2 = "5.0.0"
 poem = "3.1.10"
-reqwest = "0.12.15"
+reqwest = { version = "0.12.23", features = ["blocking"] }
 serde = "1.0.219"
 serde_json = "1.0.140"
+smol = "2.0.2"
 thiserror = "2.0.12"
-tokio = "1.45.0"
+tokio = "1.47.1"
 urlencoding = "2.1.3"

@@ -1,8 +1,23 @@
 use std::{fmt, str::FromStr};
 
-use color_eyre::eyre::eyre;
 use hickory_resolver::Resolver;
 use serde::Deserialize;
+
+type Result<T> = std::result::Result<T, self::Error>;
+
+#[derive(thiserror::Error, Debug)]
+pub enum Error {
+    #[error(transparent)]
+    Handle(#[from] HandleError),
+    #[error(transparent)]
+    Did(#[from] DidError),
+    #[error(transparent)]
+    Reqwest(#[from] reqwest::Error),
+    #[error(transparent)]
+    SerdeJson(#[from] serde_json::Error),
+    #[error(transparent)]
+    HickoryResolver(#[from] hickory_resolver::ResolveError),
+}
 
 #[derive(thiserror::Error, Debug)]
 pub enum HandleError {
@@ -22,9 +37,8 @@ pub enum HandleError {
     SegmentIllegalChar(Box<str>),
     #[error("SEGMENT: \"{0}\" can not start or end with a hyphen")]
     SegmentHyphensAtEdges(Box<str>),
-
-    #[error(transparent)]
-    Source(#[from] color_eyre::Report),
+    #[error("RESOLVE: no DID found")]
+    ResolveError,
 }
 
 #[derive(thiserror::Error, Debug)]
@@ -41,9 +55,8 @@ pub enum DidError {
     InvalidColons,
     #[error("IDENTIFIER: \"{0}\" contains an invalid character")]
     InvalidCharInIdentifier(Box<str>),
-
-    #[error(transparent)]
-    Source(#[from] color_eyre::Report),
+    #[error("RESOLVE: no DID document found")]
+    ResolveError,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -56,34 +69,35 @@ pub enum DidMethod {
 pub struct Did(Box<str>, DidMethod);
 
 impl Did {
-    pub async fn resolve(&self) -> color_eyre::Result<DidDocument> {
+    pub fn resolve(&self) -> Result<DidDocument> {
         if self.is_plc() {
-            self.resolve_plc().await
+            self.resolve_plc()
         } else if self.is_web() {
-            self.resolve_web().await
+            self.resolve_web()
         } else {
-            Err(eyre!("No DID Document Found"))
+            Err(DidError::ResolveError.into())
         }
     }
 
-    async fn resolve_plc(&self) -> color_eyre::Result<DidDocument> {
+    fn resolve_plc(&self) -> Result<DidDocument> {
         let url = format!("https://plc.directory/{self}");
-        let body = reqwest::get(url).await?.text().await?;
+        let body = reqwest::blocking::get(url)?.text()?;
 
         let doc: DidDocument = serde_json::from_str(&body)?;
         println!("{doc:#?}");
         Ok(doc)
     }
 
-    async fn resolve_web(&self) -> color_eyre::Result<DidDocument> {
+    fn resolve_web(&self) -> Result<DidDocument> {
         let identifier = self.get_identifier();
         let url = format!("https://{identifier}/.well-known/did.json");
-        let body = reqwest::get(url).await?.text().await?;
+        let body = reqwest::blocking::get(url)?.text()?;
 
         let doc: DidDocument = serde_json::from_str(&body)?;
         println!("{doc:#?}");
         Ok(doc)
     }
+
     fn is_plc(&self) -> bool {
         if self.1 == DidMethod::Plc {
             return true;
@@ -112,8 +126,7 @@ impl fmt::Display for Did {
 
 impl FromStr for Did {
     type Err = DidError;
-
-    fn from_str(mut s: &str) -> Result<Self, Self::Err> {
+    fn from_str(mut s: &str) -> std::result::Result<Self, Self::Err> {
         // When resolving a handle with DNS the entry should start with did=
         // We can just trim it here.
         if s.contains("did=") {
@@ -192,9 +205,11 @@ const SEGMENT_LEN: usize = 63;
 pub struct Handle(Box<str>);
 
 impl Handle {
-    pub async fn resolve(&self) -> color_eyre::Result<Did> {
-        let dns_res = self.resolve_dns().await;
-        let well_known_res = self.resolve_well_known().await;
+    pub fn resolve(&self) -> Result<Did> {
+        println!("We started resolving a handle here :3");
+        let dns_res = self.resolve_dns();
+        println!("We have resolved dns here :3");
+        let well_known_res = self.resolve_well_known();
 
         if dns_res.is_ok() && well_known_res.is_err() {
             return dns_res;
@@ -208,41 +223,45 @@ impl Handle {
             return dns_res;
         }
 
-        Err(eyre!("No DID found"))
+        Err(HandleError::ResolveError.into())
     }
 
-    async fn resolve_dns(&self) -> color_eyre::Result<Did> {
+    fn resolve_dns(&self) -> Result<Did> {
         let txt = format!("_atproto.{}.", self);
-        let resolver = Resolver::builder_tokio().unwrap().build();
-        let response = resolver.txt_lookup(txt).await;
+        let resolver = Resolver::builder_tokio()?.build();
+        let response = resolver.txt_lookup(txt);
+        smol::block_on(async {
+            println!("We are inside an async block resolving a handle here :3");
+            let Ok(response) = response.await else {
+                println!("We are inside an async block resolving a handle here :3");
+                return Err(HandleError::ResolveError.into());
+            };
 
-        match response {
-            Err(_) => return Err(eyre!("No DID found")),
-            _ => (),
-        }
+            println!("We are inside an async block and have a response here :3");
 
-        let response = response.unwrap();
-        let records = response.iter();
-        for record in records {
-            let did: Result<Did, DidError> = Did::from_str(&record.to_string());
-            match did {
-                Ok(did) => return Ok(did),
-                Err(err) => eprintln!("{err}"),
+            let records = response.iter();
+            for record in records {
+                let did: std::result::Result<Did, DidError> = Did::from_str(&record.to_string());
+                match did {
+                    Ok(did) => return Ok(did),
+                    Err(err) => eprintln!("{err}"),
+                }
             }
-        }
 
-        Err(eyre!("No DID found"))
+            Err(HandleError::ResolveError.into())
+        })
     }
 
-    async fn resolve_well_known(&self) -> color_eyre::Result<Did> {
+    fn resolve_well_known(&self) -> Result<Did> {
         let url = format!("https://{self}/.well-known/atproto-did");
-        let body = reqwest::get(url).await?.text().await?;
+        let body = reqwest::blocking::get(url)?.text()?;
 
         let did = Did::from_str(&body);
         if let Ok(did) = did {
             return Ok(did);
         }
-        Err(eyre!("No DID found"))
+
+        Err(HandleError::ResolveError.into())
     }
 }
 
@@ -255,7 +274,7 @@ impl fmt::Display for Handle {
 impl FromStr for Handle {
     type Err = HandleError;
 
-    fn from_str(mut s: &str) -> Result<Self, Self::Err> {
+    fn from_str(mut s: &str) -> std::result::Result<Self, Self::Err> {
         // ATProto Handles have defined syntax requirements
         // Instead of validating handles after, I simply only allow valid
         // Handles to be made.
@@ -278,7 +297,7 @@ impl FromStr for Handle {
         if s.chars().next().unwrap() == '@' {
             s = &s[1..];
         };
-        
+
         // Handles may also be prefixed with "at://" as part of ATProto.
         if s[0..5].contains("at://") {
             s = &s[5..];

@@ -38,6 +38,7 @@ fn login_success(did: Did) -> Markup {
 
 #[handler]
 fn index() -> Markup {
+    println!("We are indexing here :3");
     html! {
         script src="https://unpkg.com/htmx.org@2.0.4" {}
         body {
@@ -48,16 +49,19 @@ fn index() -> Markup {
 }
 
 #[handler]
-async fn login(Form(LoginForm { handle }): Form<LoginForm>) -> Markup {
+fn login(Form(LoginForm { handle }): Form<LoginForm>) -> Markup {
+    println!("We are initiating login :3");
     let Ok(handle) = Handle::from_str(&handle) else {
         return login_err(Err(eyre!("Invalid Handle")));
     };
+    println!("We got a handle here :3");
 
-    let Ok(did) = handle.resolve().await else {
+    let Ok(did) = handle.resolve() else {
         return login_err(Err(eyre!("Invalid Handle")));
     };
 
-    let Ok(doc) = did.resolve().await else {
+    println!("We have resolved this handle :3");
+    let Ok(doc) = did.resolve() else {
         return login_err(Err(eyre!("Invalid Handle")));
     };
 
@@ -71,6 +75,7 @@ async fn login(Form(LoginForm { handle }): Form<LoginForm>) -> Markup {
 #[tokio::main]
 async fn main() -> color_eyre::Result<()> {
     color_eyre::install()?;
+
     let app = Route::new().at("/", get(index)).at("/login", post(login));
 
     Server::new(TcpListener::bind("0.0.0.0:3000"))
